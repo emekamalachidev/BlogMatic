@@ -11,25 +11,22 @@ from flask_jwt_extended import (
     get_jwt_identity
 )
 import openai
-import stripe
 import requests
 from dotenv import load_dotenv
 
-# Load env vars
+# ---------------- ENV ----------------
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 JWT_SECRET = os.getenv("JWT_SECRET", "blogmatic-secret")
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+PAYSTACK_PLAN_ID = os.getenv("PAYSTACK_PLAN_ID")
 
 openai.api_key = OPENAI_API_KEY
-stripe.api_key = STRIPE_SECRET_KEY
 
+# ---------------- APP SETUP ----------------
 app = Flask(__name__, static_folder="static")
 CORS(app)
-
 app.config["JWT_SECRET_KEY"] = JWT_SECRET
 jwt = JWTManager(app)
 
@@ -43,8 +40,7 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE,
     password TEXT,
     subscribed INTEGER DEFAULT 0,
-    free_credits INTEGER DEFAULT 3,
-    stripe_customer_id TEXT
+    free_credits INTEGER DEFAULT 3
 )
 """)
 
@@ -57,7 +53,6 @@ CREATE TABLE IF NOT EXISTS blogs (
     created_at TEXT
 )
 """)
-
 conn.commit()
 
 # ---------------- AUTH ----------------
@@ -75,7 +70,6 @@ def register():
     except:
         return jsonify(error="User already exists"), 400
 
-
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.json
@@ -87,7 +81,6 @@ def login():
         token = create_access_token(identity=data["email"])
         return jsonify(token=token)
     return jsonify(error="Invalid credentials"), 401
-
 
 # ---------------- AI BLOG GENERATION ----------------
 @app.route("/api/generate", methods=["POST"])
@@ -139,60 +132,50 @@ Return JSON ONLY with:
     conn.commit()
     return jsonify(content=blog_json)
 
-
-# ---------------- STRIPE CHECKOUT ----------------
+# ---------------- PAYSTACK CHECKOUT ----------------
 @app.route("/api/checkout", methods=["POST"])
 @jwt_required()
 def checkout():
     email = get_jwt_identity()
-    c.execute("SELECT stripe_customer_id FROM users WHERE email=?", (email,))
-    row = c.fetchone()
+    c.execute("SELECT subscribed FROM users WHERE email=?", (email,))
+    user = c.fetchone()
+    if not user:
+        return jsonify(error="User not found"), 404
 
-    if row and row[0]:
-        customer_id = row[0]
-    else:
-        customer = stripe.Customer.create(email=email)
-        customer_id = customer.id
-        c.execute(
-            "UPDATE users SET stripe_customer_id=? WHERE email=?",
-            (customer_id, email)
-        )
-        conn.commit()
-
-    session = stripe.checkout.Session.create(
-        customer=customer_id,
-        mode="subscription",
-        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
-        success_url=request.host_url + "?success=true",
-        cancel_url=request.host_url + "?cancelled=true"
+    # Create a Paystack transaction
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "email": email,
+        "plan": PAYSTACK_PLAN_ID
+    }
+    response = requests.post(
+        "https://api.paystack.co/transaction/initialize",
+        headers=headers,
+        json=payload
     )
+    data = response.json()
+    if not data.get("status"):
+        return jsonify(error="Paystack initialization failed"), 500
 
-    return jsonify(url=session.url)
+    return jsonify(url=data["data"]["authorization_url"])
 
-
+# ---------------- WEBHOOK ----------------
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    payload = request.data
-    sig = request.headers.get("Stripe-Signature")
+    event = request.json
 
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig, STRIPE_WEBHOOK_SECRET
-        )
-    except:
-        return "", 400
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        customer = stripe.Customer.retrieve(session.customer)
+    # Only handle subscription payment success events
+    if event.get("event") == "charge.success":
+        customer_email = event["data"]["customer"]["email"]
         c.execute(
             "UPDATE users SET subscribed=1 WHERE email=?",
-            (customer.email,)
+            (customer_email,)
         )
         conn.commit()
-
     return "", 200
-
 
 # ---------------- ADMIN ----------------
 @app.route("/api/admin/stats")
@@ -206,7 +189,6 @@ def admin():
     users = c.fetchall()
     return jsonify(users=users)
 
-
 # ---------------- FRONTEND ----------------
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
@@ -215,6 +197,7 @@ def serve(path):
         return send_from_directory("static", path)
     return send_from_directory("static", "index.html")
 
-
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
