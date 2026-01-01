@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BlogMatic</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="p-8 bg-gray-100">
+
+<h1 class="text-4xl font-bold mb-6">BlogMatic</h1>
+
+<div id="auth">
+  <input id="email" placeholder="Email" class="border p-2">
+  <input id="password" type="password" placeholder="Password" class="border p-2">
+  <button onclick="login()" class="bg-blue-600 text-white px-4 py-2">Login</button>
+  <button onclick="register()" class="bg-gray-600 text-white px-4 py-2">Register</button>
+</div>
+
+<div id="app" class="hidden space-y-4 mt-6">
+  <textarea id="topic" class="border w-full p-3" placeholder="Blog topic"></textarea>
+  <button onclick="generate()" class="bg-green-600 text-white px-4 py-2">Generate Blog</button>
+  <button onclick="subscribe()" class="bg-yellow-500 text-white px-4 py-2">Upgrade ($15/month)</button>
+  <div id="result" class="bg-white p-6"></div>
+</div>
+
+<script>
+let token = localStorage.getItem("token");
+if (token) document.getElementById("app").classList.remove("hidden");
+
+async function login(){
+  const r = await fetch("/api/login", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({email: email.value, password: password.value})
+  });
+  const d = await r.json();
+  if(r.ok){
+    localStorage.setItem("token", d.token);
+    location.reload();
+  } else alert(d.error);
+}
+
+async function register(){
+  const r = await fetch("/api/register", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({email: email.value, password: password.value})
+  });
+  const d = await r.json();
+  if(r.ok){
+    localStorage.setItem("token", d.token);
+    location.reload();
+  } else alert(d.error);
+}
+
+async function subscribe(){
+  const r = await fetch("/api/checkout", {
+    method: "POST",
+    headers: {Authorization:"Bearer "+token}
+  });
+  const d = await r.json();
+  location.href = d.url;
+}
+
+async function generate(){
+  result.innerHTML = "Generating…";
+  const r = await fetch("/api/generate", {
+    method: "POST",
+    headers: {
+      Authorization:"Bearer "+token,
+      "Content-Type":"application/json"
+    },
+    body: JSON.stringify({topic: topic.value})
+  });
+  const d = await r.json();
+  if(d.error){
+    result.innerHTML = d.error;
+  } else {
+    result.innerHTML = `
+      <h2 class="text-xl font-bold">${d.content.title}</h2>
+      <p class="italic">${d.content.meta_description}</p>
+      <div class="mt-4">${d.content.content}</div>
+      <p class="mt-2">Tags: ${d.content.tags.join(", ")}</p>
+    `;
+  }
+}
+</script>
+
+</body>
+</html>
